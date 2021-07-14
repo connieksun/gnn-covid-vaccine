@@ -24,8 +24,9 @@ class GATLayer(nn.Module):
     def edge_attention(self, edges):
         z2 = torch.cat([edges.src['z'], edges.dst['z']], dim=1)
         a = self.attn_fc(z2)
-        #if self.E != None:
-        #    return {'e': F.leaky_relu(a) * self.E} # need to work on dimensionality here
+        if self.E != None:
+            e = F.leaky_relu(a) * torch.unsqueeze(self.E, 1)
+            return {'e': e}
         return {'e': F.leaky_relu(a)}
 
     def message_func(self, edges):
@@ -38,7 +39,7 @@ class GATLayer(nn.Module):
  
     def forward(self, h, E):
         self.E = E # adjacency matrix; edge weights
-        z = self.fc(h)
+        z = self.fc(h.float())
         self.g.ndata['z'] = z
         self.g.apply_edges(self.edge_attention)
         self.g.update_all(self.message_func, self.reduce_func)
@@ -116,7 +117,7 @@ class STAN(nn.Module):
         function, then repeat with layer 2
         '''
         for each_step in range(timestep):        
-            cur_h = self.layer1(dynamic[:, each_step, :], e_weights)
+            cur_h = self.layer1(dynamic[:, each_step, :], e_weights[each_step])
             cur_h = F.elu(cur_h)
             cur_h = self.layer2(cur_h, None)
             cur_h = F.elu(cur_h)
