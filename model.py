@@ -5,12 +5,13 @@ import numpy as np
 import warnings
 #warnings.filterwarnings('ignore')
 
-# STAN model modified for SIRVC model (SIR + vaccinations + community interactions)
+# STAN model modified for SIRVC model (SIR + vaccinations + community interactions) and edge weights
 
 class GATLayer(nn.Module):
     def __init__(self, g, in_dim, out_dim):
         super(GATLayer, self).__init__()
         self.g = g
+        self.E = None
         self.fc = nn.Linear(in_dim, out_dim)
         self.attn_fc = nn.Linear(2 * out_dim, 1)
         self.reset_parameters()
@@ -23,6 +24,8 @@ class GATLayer(nn.Module):
     def edge_attention(self, edges):
         z2 = torch.cat([edges.src['z'], edges.dst['z']], dim=1)
         a = self.attn_fc(z2)
+        #if self.E != None:
+        #    return {'e': F.leaky_relu(a) * self.E} # need to work on dimensionality here
         return {'e': F.leaky_relu(a)}
 
     def message_func(self, edges):
@@ -32,8 +35,9 @@ class GATLayer(nn.Module):
         alpha = F.softmax(nodes.mailbox['e'], dim=1)
         h = torch.sum(alpha * nodes.mailbox['z'], dim=1)
         return {'h': h}
-
-    def forward(self, h):
+ 
+    def forward(self, h, E):
+        self.E = E # adjacency matrix; edge weights
         z = self.fc(h)
         self.g.ndata['z'] = z
         self.g.apply_edges(self.edge_attention)
@@ -48,8 +52,8 @@ class MultiHeadGATLayer(nn.Module):
             self.heads.append(GATLayer(g, in_dim, out_dim))
         self.merge = merge
 
-    def forward(self, h):
-        head_outs = [attn_head(h) for attn_head in self.heads]
+    def forward(self, h, E):
+        head_outs = [attn_head(h, E) for attn_head in self.heads]
         if self.merge == 'cat':
             return torch.cat(head_outs, dim=1)
         else:
@@ -75,7 +79,7 @@ class STAN(nn.Module):
         self.gru_dim = gru_dim
         self.device = device
 
-    def forward(self, dynamic, cI, cR, N, I, R, h=None, V=None):
+    def forward(self, dynamic, cI, cR, N, I, R, h=None, V=None, e_weights=None):
         '''
         dynamic: an array of the dI/dR/dS values for each loc for every day from the start date to the end date
                 of the input data (e.g., training dates) jumping by slide_step each time.
@@ -112,9 +116,9 @@ class STAN(nn.Module):
         function, then repeat with layer 2
         '''
         for each_step in range(timestep):        
-            cur_h = self.layer1(dynamic[:, each_step, :])
+            cur_h = self.layer1(dynamic[:, each_step, :], e_weights)
             cur_h = F.elu(cur_h)
-            cur_h = self.layer2(cur_h)
+            cur_h = self.layer2(cur_h, None)
             cur_h = F.elu(cur_h)
             
             cur_h = torch.max(cur_h, 0)[0].reshape(1, self.hidden_dim2)
