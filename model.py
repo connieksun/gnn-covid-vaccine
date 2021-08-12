@@ -116,8 +116,11 @@ class STAN(nn.Module):
         range for all locations with all features into layer 1, then pass through activation
         function, then repeat with layer 2
         '''
-        for each_step in range(timestep):        
-            cur_h = self.layer1(dynamic[:, each_step, :], e_weights[each_step])
+        for each_step in range(timestep):
+            if e_weights is not None: 
+                cur_h = self.layer1(dynamic[:, each_step, :], e_weights[each_step])
+            else:
+                cur_h = self.layer1(dynamic[:, each_step, :], None)
             cur_h = F.elu(cur_h)
             cur_h = self.layer2(cur_h, None)
             cur_h = F.elu(cur_h)
