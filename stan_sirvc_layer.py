@@ -129,41 +129,38 @@ def val_adaptive_loss(pred_I, pred_I_sir, true_I, pred_window=14):
     return total_loss / pred_window
 
 
-def get_features(raw_data, start_date, end_date, loc_list, edges=True):
+def get_features(raw_data, start_date, end_date, loc_list, edges=True, sum=False):
     # Generate Graph
     # add flight neighbors
     # for now, add a connection if there is any flight between the two countries between start and end date
-    if edges:
-        loc_list = list(raw_data['location'].unique())
-        flight_counts = pd.read_csv('processed_flights/flight_counts_2021_all_to_05.csv')
-        adj_map = {}
-        for each_loc in loc_list:
-            df = flight_counts.loc[flight_counts["origin_country"] == each_loc]
-            adj_map[each_loc] = set(df["destination_country"].unique())
-        flight_counts['day'] = pd.to_datetime(flight_counts['day'])
-        # add land neighbors
-        neighbor_reader = csv.reader(open('neighbors.csv', 'r'))
-        neighbors = {}
-        for row in neighbor_reader:
-            neighbors[row[0]] = row[1].split(',')
-        for each_loc,connected in adj_map.items():
-            for neighbor in neighbors[each_loc]:
-                if neighbor in loc_list:
-                    connected.add(neighbor)
-        # create graph
-        rows = []
-        cols = []
-        for each_loc in adj_map:
-            for each_loc2 in adj_map[each_loc]:
-                if each_loc in loc_list and each_loc2 in loc_list:
-                    rows.append(loc_list.index(each_loc))
-                    cols.append(loc_list.index(each_loc2))
-        #print(rows)
-        #print(cols)
-        g = dgl.graph((rows, cols))
-        print(g.number_of_nodes)
-    else:
-        g = None
+    loc_list = list(raw_data['location'].unique())
+    flight_counts = pd.read_csv('processed_flights/flight_counts_2021_all_to_05.csv')
+    adj_map = {}
+    for each_loc in loc_list:
+        df = flight_counts.loc[flight_counts["origin_country"] == each_loc]
+        adj_map[each_loc] = set(df["destination_country"].unique())
+    flight_counts['day'] = pd.to_datetime(flight_counts['day'])
+    # add land neighbors
+    neighbor_reader = csv.reader(open('neighbors.csv', 'r'))
+    neighbors = {}
+    for row in neighbor_reader:
+        neighbors[row[0]] = row[1].split(',')
+    for each_loc,connected in adj_map.items():
+        for neighbor in neighbors[each_loc]:
+            if neighbor in loc_list:
+                connected.add(neighbor)
+    # create graph
+    rows = []
+    cols = []
+    for each_loc in adj_map:
+        for each_loc2 in adj_map[each_loc]:
+            if each_loc in loc_list and each_loc2 in loc_list:
+                rows.append(loc_list.index(each_loc))
+                cols.append(loc_list.index(each_loc2))
+    #print(rows)
+    #print(cols)
+    g = dgl.graph((rows, cols))
+    print(g.number_of_nodes)
     #Preprocess features
 
     #active_cases = []
@@ -285,6 +282,58 @@ def get_features(raw_data, start_date, end_date, loc_list, edges=True):
         test_edges = flight_counts[(flight_counts["day"] >= test_start_date) & (flight_counts["day"] < end_date)]
     else:
         train_edges, val_edges, test_edges = None, None, None
+
+    if sum:
+        active_cases = np.expand_dims(active_cases.sum(axis=0), axis=0)
+        recovered_cases = np.expand_dims(recovered_cases.sum(axis=0), axis=0)
+        susceptible_cases = np.expand_dims(susceptible_cases.sum(axis=0), axis=0)
+        fully_vaccinated = np.expand_dims(fully_vaccinated.sum(axis=0), axis=0)
+
+        Vt = np.concatenate((np.zeros((fully_vaccinated.shape[0],1), dtype=np.float32), np.diff(fully_vaccinated)), axis=-1)
+        loc_list = [0]
+
+        dI = np.concatenate((np.zeros((active_cases.shape[0],1), dtype=np.float32), np.diff(active_cases)), axis=-1)
+        dR = np.concatenate((np.zeros((recovered_cases.shape[0],1), dtype=np.float32), np.diff(recovered_cases)), axis=-1)
+        dS = np.concatenate((np.zeros((susceptible_cases.shape[0],1), dtype=np.float32), np.diff(susceptible_cases)), axis=-1)
+        # number of new fully vaccinated each day
+        Vt = np.concatenate((np.zeros((fully_vaccinated.shape[0],1), dtype=np.float32), np.diff(fully_vaccinated)), axis=-1)
+        print("done")
+
+        #Build normalizer
+        normalizer = {'S':{}, 'I':{}, 'R':{}, 'dS':{}, 'dI':{}, 'dR':{}, 'Vt':{}}
+
+        for i, each_loc in enumerate(loc_list):
+            normalizer['S'][each_loc] = (np.mean(susceptible_cases[i]), np.std(susceptible_cases[i]))
+            normalizer['I'][each_loc] = (np.mean(active_cases[i]), np.std(active_cases[i]))
+            normalizer['R'][each_loc] = (np.mean(recovered_cases[i]), np.std(recovered_cases[i]))
+            normalizer['dI'][each_loc] = (np.mean(dI[i]), np.std(dI[i]))
+            normalizer['dR'][each_loc] = (np.mean(dR[i]), np.std(dR[i]))
+            normalizer['dS'][each_loc] = (np.mean(dS[i]), np.std(dS[i]))
+            normalizer['Vt'][each_loc] = (np.mean(Vt[i]), np.std(Vt[i]))
+
+        dynamic_feat = np.concatenate((np.expand_dims(dI, axis=-1), np.expand_dims(dR, axis=-1), np.expand_dims(dS, axis=-1)), axis=-1)
+            
+        #Normalize
+        for i, each_loc in enumerate(loc_list):
+            dynamic_feat[i, :, 0] = (dynamic_feat[i, :, 0] - normalizer['dI'][each_loc][0]) / normalizer['dI'][each_loc][1]
+            dynamic_feat[i, :, 1] = (dynamic_feat[i, :, 1] - normalizer['dR'][each_loc][0]) / normalizer['dR'][each_loc][1]
+            dynamic_feat[i, :, 2] = (dynamic_feat[i, :, 2] - normalizer['dS'][each_loc][0]) / normalizer['dS'][each_loc][1]
+
+        dI_mean = []
+        dI_std = []
+        dR_mean = []
+        dR_std = []
+
+        for i, each_loc in enumerate(loc_list):
+            dI_mean.append(normalizer['dI'][each_loc][0])
+            dR_mean.append(normalizer['dR'][each_loc][0])
+            dI_std.append(normalizer['dI'][each_loc][1])
+            dR_std.append(normalizer['dR'][each_loc][1])
+
+        dI_mean = np.array(dI_mean)
+        dI_std = np.array(dI_std)
+        dR_mean = np.array(dR_mean)
+        dR_std = np.array(dR_std)
 
     train_x, train_I, train_R, train_cI, train_cR, train_yI, train_yR, train_Vt, train_edges = prepare_data(train_feat, active_cases[:, :-valid_window-test_window], recovered_cases[:, :-valid_window-test_window], Vt[:, :-valid_window-test_window], train_edges, start_date, loc_list, history_window, pred_window, slide_step)
 
